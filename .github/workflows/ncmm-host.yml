@@ -1,0 +1,267 @@
+name: NCMM Certified Hosts
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Exact CDDA release tag, e.g. cdda-experimental-2026-09-23-0546'
+        required: false
+        type: string
+  schedule:
+    - cron: '23 * * * *'
+  push:
+    paths:
+      - 'ncmm-platform/host_patch/**'
+      - 'ncmm-platform/sdk/**'
+      - 'ncmm-platform/ci/Get-PatchRevision.ps1'
+      - 'ncmm-platform/ci/Build-HostPackage.ps1'
+      - 'ncmm-platform/ci/seed-hosts.txt'
+      - '.github/workflows/ncmm-host.yml'
+
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+concurrency:
+  group: ncmm-certified-host-pipeline
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      count: ${{ steps.select.outputs.count }}
+      patch_revision: ${{ steps.select.outputs.patch_revision }}
+    steps:
+      - name: Checkout NCMM repository
+        uses: actions/checkout@v4
+
+      - name: Select upstream releases
+        id: select
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          patch_revision=$(pwsh -NoProfile -File ncmm-platform/ci/Get-PatchRevision.ps1 -RepositoryRoot ncmm-platform | tr -d '\r\n')
+          echo "patch_revision=$patch_revision" >> "$GITHUB_OUTPUT"
+
+          if [ -n "${REQUESTED_TAG:-}" ]; then
+            tags=$(printf '%s\n' "$REQUESTED_TAG")
+          else
+            gh api 'repos/CleverRaven/Cataclysm-DDA/releases?per_page=40' \
+              --jq '.[] | select(.tag_name | startswith("cdda-experimental-")) | .tag_name' > /tmp/upstream_tags.txt
+
+            cat ncmm-platform/ci/seed-hosts.txt /tmp/upstream_tags.txt 2>/dev/null | awk 'NF && !seen[$0]++' > /tmp/candidates.txt
+
+            jq -r '.hosts[]?.upstream_tag // empty' ncmm-platform/feed/index.json | sort -u > /tmp/known.txt
+
+            : > /tmp/rejected.txt
+            rejected_revision=$(jq -r '.patch_revision // ""' ncmm-platform/feed/rejected.json)
+            if [ "$rejected_revision" = "$patch_revision" ]; then
+              jq -r '.rejected | keys[]?' ncmm-platform/feed/rejected.json | sort -u > /tmp/rejected.txt
+            fi
+
+            while IFS= read -r tag; do
+              if ! grep -Fxq "$tag" /tmp/known.txt && ! grep -Fxq "$tag" /tmp/rejected.txt; then
+                printf '%s\n' "$tag"
+              fi
+            done < /tmp/candidates.txt | head -n 3 > /tmp/selected.txt
+            tags=$(cat /tmp/selected.txt || true)
+          fi
+
+          if [ -z "${tags:-}" ]; then
+            echo 'matrix={"tag":[]}' >> "$GITHUB_OUTPUT"
+            echo 'count=0' >> "$GITHUB_OUTPUT"
+            echo 'No host builds required.'
+          else
+            matrix=$(printf '%s\n' "$tags" | jq -R . | jq -s -c '{tag:.}')
+            count=$(printf '%s\n' "$tags" | sed '/^$/d' | wc -l | tr -d ' ')
+            echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+            echo "count=$count" >> "$GITHUB_OUTPUT"
+            echo "Selected: $tags"
+          fi
+
+  build:
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    runs-on: windows-2022
+    steps:
+      - name: Checkout NCMM repository
+        uses: actions/checkout@v4
+        with:
+          path: ncmmrepo
+
+      - name: Checkout exact CDDA release
+        uses: actions/checkout@v4
+        with:
+          repository: CleverRaven/Cataclysm-DDA
+          ref: ${{ matrix.tag }}
+          fetch-depth: 1
+          path: upstream
+
+      - name: Capture source commit
+        id: source
+        shell: powershell
+        run: |
+          $sha = (git -C upstream rev-parse HEAD).Trim()
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+
+      - name: Contract preflight / patch
+        id: patch
+        continue-on-error: true
+        shell: powershell
+        run: |
+          ./ncmmrepo/ncmm-platform/host_patch/Apply-NCMMHostPatch.ps1 -SourceRoot ./upstream
+
+      - name: Record unsupported contract
+        if: steps.patch.outcome != 'success'
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path result | Out-Null
+          [ordered]@{
+            status = 'unsupported'
+            upstream_tag = '${{ matrix.tag }}'
+            source_commit = '${{ steps.source.outputs.sha }}'
+            patch_revision = '${{ needs.discover.outputs.patch_revision }}'
+            recorded_utc = [DateTime]::UtcNow.ToString('o')
+          } | ConvertTo-Json | Set-Content result/rejection.json -Encoding UTF8
+
+      - name: Setup MSBuild
+        if: steps.patch.outcome == 'success'
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup vcpkg
+        if: steps.patch.outcome == 'success'
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: '${{ runner.workspace }}/b/vcpkg'
+          vcpkgGitCommitId: 'f6672d8e480ccdecddfad3fd1b838ba369ffe6cd'
+
+      - name: Integrate vcpkg
+        if: steps.patch.outcome == 'success'
+        shell: powershell
+        run: |
+          vcpkg integrate install --vcpkg-root '${{ runner.workspace }}\b\vcpkg'
+
+      - name: Setup MSYS2 helper tools
+        if: steps.patch.outcome == 'success'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: mingw64
+          install: >-
+            gettext
+            make
+
+      - name: Cache vcpkg packages
+        if: steps.patch.outcome == 'success'
+        uses: actions/cache@v4
+        with:
+          path: upstream/msvc-full-features/vcpkg_installed
+          key: ncmm-vcpkg-${{ matrix.tag }}-${{ hashFiles('upstream/msvc-full-features/vcpkg.json', 'upstream/.github/vcpkg_triplets/x64-windows-static.cmake') }}
+          restore-keys: |
+            ncmm-vcpkg-
+
+      - name: Build and certify host
+        if: steps.patch.outcome == 'success'
+        shell: powershell
+        run: |
+          ./ncmmrepo/ncmm-platform/ci/Build-HostPackage.ps1 `
+            -RepositoryRoot "$env:GITHUB_WORKSPACE/ncmmrepo/ncmm-platform" `
+            -UpstreamRoot "$env:GITHUB_WORKSPACE/upstream" `
+            -UpstreamTag '${{ matrix.tag }}' `
+            -OutputRoot "$env:GITHUB_WORKSPACE/result/package"
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: ncmm-result-${{ strategy.job-index }}
+          path: result/**
+          if-no-files-found: error
+
+  publish:
+    needs: [discover, build]
+    if: always() && needs.discover.result == 'success' && needs.discover.outputs.count != '0'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout NCMM repository
+        uses: actions/checkout@v4
+
+      - name: Download build results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ncmm-result-*
+          path: results
+          merge-multiple: false
+
+      - name: Publish certified hosts and update feed
+        shell: bash
+        env:
+          PATCH_REVISION: ${{ needs.discover.outputs.patch_revision }}
+        run: |
+          set -euo pipefail
+          index='ncmm-platform/feed/index.json'
+          rejected='ncmm-platform/feed/rejected.json'
+
+          old_rev=$(jq -r '.patch_revision // ""' "$rejected")
+          if [ "$old_rev" != "$PATCH_REVISION" ]; then
+            jq --arg rev "$PATCH_REVISION" '.patch_revision=$rev | .rejected={}' "$rejected" > /tmp/rejected.json
+            mv /tmp/rejected.json "$rejected"
+          fi
+
+          while IFS= read -r meta; do
+            dir=$(dirname "$meta")
+            tag=$(jq -r '.upstream_tag' "$meta")
+            commit=$(jq -r '.source_commit' "$meta")
+            host_sha=$(jq -r '.host_sha256' "$meta")
+            release_tag="ncmm-host-${tag}"
+            host="$dir/cataclysm-tiles.ncmm.exe"
+            zip=$(find "$(dirname "$dir")" -maxdepth 1 -type f -name "ncmm-host-win64-${tag}.zip" | head -n1 || true)
+
+            gh release view "$release_tag" >/dev/null 2>&1 || \
+              gh release create "$release_tag" --title "NCMM host for $tag" \
+                --notes "Certified NCMM Host API v1 for $tag ($commit)."
+            gh release upload "$release_tag" "$host" --clobber
+            if [ -n "$zip" ]; then gh release upload "$release_tag" "$zip" --clobber; fi
+
+            url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}/cataclysm-tiles.ncmm.exe"
+            while IFS= read -r vanilla_sha; do
+              [ -z "$vanilla_sha" ] && continue
+              jq --arg key "$vanilla_sha" \
+                 --arg commit "$commit" \
+                 --arg tag "$tag" \
+                 --arg url "$url" \
+                 --arg hostsha "$host_sha" \
+                 '.hosts[$key] = {source_commit:$commit,upstream_tag:$tag,host_url:$url,host_sha256:$hostsha,ncmm_version:"0.2.0",loader_api:1}' \
+                 "$index" > /tmp/index.json
+              mv /tmp/index.json "$index"
+            done < <(jq -r '.vanilla_sha256[]' "$meta")
+          done < <(find results -type f -name host.json)
+
+          while IFS= read -r rejection; do
+            tag=$(jq -r '.upstream_tag' "$rejection")
+            commit=$(jq -r '.source_commit' "$rejection")
+            when=$(jq -r '.recorded_utc' "$rejection")
+            jq --arg tag "$tag" --arg commit "$commit" --arg when "$when" --arg rev "$PATCH_REVISION" \
+              '.patch_revision=$rev | .rejected[$tag]={source_commit:$commit,recorded_utc:$when}' \
+              "$rejected" > /tmp/rejected.json
+            mv /tmp/rejected.json "$rejected"
+          done < <(find results -type f -name rejection.json)
+
+          now=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          jq --arg now "$now" '.generated_utc=$now' "$index" > /tmp/index.json
+          mv /tmp/index.json "$index"
+
+          if ! git diff --quiet -- "$index" "$rejected"; then
+            git config user.name 'NCMM Host Bot'
+            git config user.email 'actions@users.noreply.github.com'
+            git add "$index" "$rejected"
+            git commit -m 'NCMM: update certified host feed'
+            git push
+          fi
