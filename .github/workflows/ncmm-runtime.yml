@@ -47,7 +47,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = 'ncmm-runtime-v0.2.0'
-          gh release view $tag *> $null
+          cmd /c "gh release view $tag >nul 2>nul"
           if ($LASTEXITCODE -ne 0) {
             gh release create $tag --title 'NCMM Runtime v0.2.0' --notes 'Portable NCMM runtime. No compiler or build tools are required on player PCs.'
             if ($LASTEXITCODE -ne 0) { throw 'Could not create runtime release.' }

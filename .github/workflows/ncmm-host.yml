@@ -65,11 +65,17 @@ jobs:
               jq -r '.rejected | keys[]?' ncmm-platform/feed/rejected.json | sort -u > /tmp/rejected.txt
             fi
 
+            : > /tmp/selected.txt
+            selected=0
             while IFS= read -r tag; do
               if ! grep -Fxq "$tag" /tmp/known.txt && ! grep -Fxq "$tag" /tmp/rejected.txt; then
-                printf '%s\n' "$tag"
+                printf '%s\n' "$tag" >> /tmp/selected.txt
+                selected=$((selected + 1))
+                if [ "$selected" -ge 3 ]; then
+                  break
+                fi
               fi
-            done < /tmp/candidates.txt | head -n 3 > /tmp/selected.txt
+            done < /tmp/candidates.txt
             tags=$(cat /tmp/selected.txt || true)
           fi
 
