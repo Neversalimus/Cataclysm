@@ -247,7 +247,7 @@ jobs:
                  --arg url "$url" \
                  --arg hostsha "$host_sha" \
                  --arg patchrev "$PATCH_REVISION" \
-                 '.hosts[$key] = {source_commit:$commit,upstream_tag:$tag,host_url:$url,host_sha256:$hostsha,patch_revision:$patchrev,ncmm_version:"0.2.0",loader_api:1}' \
+                 '.hosts[$key] = {source_commit:$commit,upstream_tag:$tag,host_url:$url,host_sha256:$hostsha,patch_revision:$patchrev,ncmm_version:"0.3.0",loader_api:1}' \
                  "$index" > /tmp/index.json
               mv /tmp/index.json "$index"
             done < <(jq -r '.vanilla_sha256[]' "$meta")
