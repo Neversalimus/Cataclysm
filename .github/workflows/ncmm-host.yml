@@ -1,4 +1,4 @@
-name: NCMM Certified Hosts
+﻿name: NCMM Certified Hosts
 
 on:
   workflow_dispatch:
@@ -57,7 +57,9 @@ jobs:
 
             cat ncmm-platform/ci/seed-hosts.txt /tmp/upstream_tags.txt 2>/dev/null | awk 'NF && !seen[$0]++' > /tmp/candidates.txt
 
-            jq -r '.hosts[]?.upstream_tag // empty' ncmm-platform/feed/index.json | sort -u > /tmp/known.txt
+            jq -r --arg rev "$patch_revision" \
+              '.hosts[]? | select((.patch_revision // "") == $rev) | .upstream_tag // empty' \
+              ncmm-platform/feed/index.json | sort -u > /tmp/known.txt
 
             : > /tmp/rejected.txt
             rejected_revision=$(jq -r '.patch_revision // ""' ncmm-platform/feed/rejected.json)
@@ -244,7 +246,8 @@ jobs:
                  --arg tag "$tag" \
                  --arg url "$url" \
                  --arg hostsha "$host_sha" \
-                 '.hosts[$key] = {source_commit:$commit,upstream_tag:$tag,host_url:$url,host_sha256:$hostsha,ncmm_version:"0.2.0",loader_api:1}' \
+                 --arg patchrev "$PATCH_REVISION" \
+                 '.hosts[$key] = {source_commit:$commit,upstream_tag:$tag,host_url:$url,host_sha256:$hostsha,patch_revision:$patchrev,ncmm_version:"0.2.0",loader_api:1}' \
                  "$index" > /tmp/index.json
               mv /tmp/index.json "$index"
             done < <(jq -r '.vanilla_sha256[]' "$meta")
