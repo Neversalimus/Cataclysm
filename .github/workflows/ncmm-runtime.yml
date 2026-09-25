@@ -1,4 +1,4 @@
-﻿﻿name: NCMM Runtime
+name: NCMM Runtime
 
 on:
   workflow_dispatch:
@@ -8,6 +8,8 @@ on:
       - 'ncmm-platform/mods/**'
       - 'ncmm-platform/sdk/**'
       - 'ncmm-platform/ci/Build-Runtime.ps1'
+      - 'ncmm-platform/ci/Test-TextEncoding.ps1'
+      - '.editorconfig'
       - '.github/workflows/ncmm-runtime.yml'
 
 permissions:
@@ -23,6 +25,11 @@ jobs:
     steps:
       - name: Checkout NCMM repository
         uses: actions/checkout@v4
+
+      - name: Validate repository text encoding
+        shell: powershell
+        run: |
+          ./ncmm-platform/ci/Test-TextEncoding.ps1 -RepoRoot "$env:GITHUB_WORKSPACE" -SelfTest
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
