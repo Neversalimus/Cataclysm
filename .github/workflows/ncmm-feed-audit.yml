@@ -38,7 +38,7 @@ jobs:
           ./ncmm-platform/ci/Test-FeedIntegrity.ps1 `
             -FeedPath ./ncmm-platform/feed/index.json `
             -RejectedPath ./ncmm-platform/feed/rejected.json `
-            -ExpectedRuntimeVersion '0.6.5' `
+            -ExpectedRuntimeVersion '0.6.6' `
             -ExpectedPatchRevision $revision `
             -Repository '${{ github.repository }}' `
             -Online
