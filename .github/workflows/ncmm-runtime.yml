@@ -48,20 +48,21 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NCMM_Runtime_v0.6.6
-          path: dist/NCMM_Runtime_v0.6.6.zip
+          name: NCMM_Runtime_v0.7.0
+          path: dist/NCMM_Runtime_v0.7.0.zip
           if-no-files-found: error
 
       - name: Publish runtime release
+        if: github.ref == 'refs/heads/master'
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = 'ncmm-runtime-v0.6.6'
+          $tag = 'ncmm-runtime-v0.7.0'
           cmd /c "gh release view $tag >nul 2>nul"
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --title 'NCMM Runtime v0.6.6' --notes 'Portable NCMM runtime with certified-host and crash-loop hardening. No compiler or build tools are required on player PCs.'
+            gh release create $tag --title 'NCMM Runtime v0.7.0' --notes 'Portable NCMM runtime with certified-host and crash-loop hardening. No compiler or build tools are required on player PCs.'
             if ($LASTEXITCODE -ne 0) { throw 'Could not create runtime release.' }
           }
-          gh release upload $tag 'dist/NCMM_Runtime_v0.6.6.zip' --clobber
+          gh release upload $tag 'dist/NCMM_Runtime_v0.7.0.zip' --clobber
           if ($LASTEXITCODE -ne 0) { throw 'Could not upload runtime package.' }
